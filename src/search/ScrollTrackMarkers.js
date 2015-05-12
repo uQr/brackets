@@ -68,6 +68,24 @@ define(function (require, exports, module) {
      */
     var $markedTickmark;
     
+    /**
+     * Vertical space above and below the scrollbar
+     * @type {number}
+     */
+    var scrollbarTrackOffset;
+
+    switch (brackets.platform) {
+    case "win": // Custom scrollbar CSS has no gap around the track
+        scrollbarTrackOffset = 0;
+        break;
+    case "mac": // Native scrollbar has padding around the track
+        scrollbarTrackOffset = 4;
+        break;
+    case "linux": // Custom scrollbar CSS has assymmetrical gap; this approximates it
+        scrollbarTrackOffset = 2;
+        break;
+    }
+    
     
     function _getScrollbar(editor) {
         // Be sure to select only the direct descendant, not also elements within nested inline editors
@@ -81,16 +99,8 @@ define(function (require, exports, module) {
         trackHt = $sb[0].offsetHeight;
         
         if (trackHt > 0) {
-            // Scrollbar visible: determine offset of track from top of scrollbar
-            if (brackets.platform === "win") {
-                trackOffset = 0;  // Custom scrollbar CSS has no gap around the track
-            } else if (brackets.platform === "mac") {
-                trackOffset = 4;  // Native scrollbar has padding around the track
-            } else { //(Linux)
-                trackOffset = 2;  // Custom scrollbar CSS has assymmetrical gap; this approximates it
-            }
+            trackOffset = scrollbarTrackOffset;
             trackHt -= trackOffset * 2;
-            
         } else {
             // No scrollbar: use the height of the entire code content
             var codeContainer = $(editor.getRootElement()).find("> .CodeMirror-scroll > .CodeMirror-sizer > div > .CodeMirror-lines > div")[0];
@@ -101,9 +111,31 @@ define(function (require, exports, module) {
 
     /** Add all the given tickmarks to the DOM in a batch */
     function _renderMarks(posArray) {
-        var html = "";
+        var html = "",
+            editorHt = $(editor.getRootElement()).find(".CodeMirror-scroll > .CodeMirror-sizer").height(),
+            cm = editor._codeMirror;
+
+        // We've pretty much taken these vars and the getY function from CodeMirror's annotatescrollbar addon
+        // https://github.com/codemirror/CodeMirror/blob/master/addon/scroll/annotatescrollbar.js
+        var wrapping = cm.getOption("lineWrapping"),
+            singleLineH = wrapping && cm.defaultTextHeight() * 1.5,
+            curLine = null,
+            curLineObj = null;
+
+        function getY(cm, pos) {
+            if (curLine !== pos.line) {
+                curLine = pos.line;
+                curLineObj = cm.getLineHandle(curLine);
+            }
+            if (wrapping && curLineObj.height > singleLineH) {
+                return cm.charCoords(pos, "local").top;
+            }
+            return cm.heightAtLine(curLineObj, "local");
+        }
+
         posArray.forEach(function (pos) {
-            var top = Math.round(pos.line / editor.lineCount() * trackHt) + trackOffset;
+            var cursorTop = getY(cm, pos);
+            var top = Math.round(cursorTop / editorHt * trackHt) + trackOffset;
             top--;  // subtract ~1/2 the ht of a tickmark to center it on ideal pos
             
             html += "<div class='tickmark' style='top:" + top + "px'></div>";
@@ -188,6 +220,20 @@ define(function (require, exports, module) {
         }
     }
 
+    /**
+     * @return {number} amount of vertical space above and below the scrollbar, in pixels
+     */
+    function getScrollbarTrackOffset() {
+        return scrollbarTrackOffset;
+    }
+
+    /**
+     * @param {number} offset Amount of vertical space above and below the scrollbar, in pixels
+     */
+    function setScrollbarTrackOffset(offset) {
+        scrollbarTrackOffset = offset;
+    }
+
     // Private helper for unit tests
     function _getTickmarks() {
         return marks;
@@ -201,4 +247,7 @@ define(function (require, exports, module) {
     exports.setVisible      = setVisible;
     exports.addTickmarks    = addTickmarks;
     exports.markCurrent     = markCurrent;
+    
+    exports.getScrollbarTrackOffset = getScrollbarTrackOffset;
+    exports.setScrollbarTrackOffset = setScrollbarTrackOffset;
 });
