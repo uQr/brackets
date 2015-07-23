@@ -36,10 +36,18 @@ define(function (require, exports, module) {
         Strings            = require("strings"),
         CommandManager     = require("command/CommandManager"),
         EditorManager      = require("editor/EditorManager"),
+        PreferencesManager = require("preferences/PreferencesManager"),
         StringUtils        = require("utils/StringUtils"),
         TokenUtils         = require("utils/TokenUtils"),
         CodeMirror         = require("thirdparty/CodeMirror/lib/codemirror"),
         _                  = require("thirdparty/lodash");
+    
+    
+    // Define the preference to decide how the line comments work
+    PreferencesManager.definePreference("lineCommentAtStart", "boolean", false, {
+        description: Strings.DESCRIPTION_SORT_DIRECTORIES_FIRST
+    });
+    
     
     /**
      * List of constants
@@ -146,17 +154,21 @@ define(function (require, exports, module) {
      */
     function _containsNotLineComment(editor, startLine, endLine, lineExp) {
         var i, line,
+            allBlanks = true,
             containsNotLineComment = false;
         
         for (i = startLine; i <= endLine; i++) {
             line = editor.document.getLine(i);
+            if (!line.match(/^\s*$/)) {
+                allBlanks = false;
+            }
             // A line is commented out if it starts with 0-N whitespace chars, then a line comment prefix
-            if (line.match(/\S/) && !_matchExpressions(line, lineExp)) {
+            if (!allBlanks && line.match(/\S/) && !_matchExpressions(line, lineExp)) {
                 containsNotLineComment = true;
                 break;
             }
         }
-        return containsNotLineComment;
+        return allBlanks || containsNotLineComment;
     }
     
     /**
@@ -171,6 +183,7 @@ define(function (require, exports, module) {
      *
      * @param {!Editor} editor
      * @param {!Array.<string>} prefixes, e.g. ["//"]
+     * @param {boolean} hasIndentComments
      * @param {string=} blockPrefix, e.g. "<!--"
      * @param {string=} blockSuffix, e.g. "-->"
      * @param {!Editor} editor The editor to edit within.
@@ -184,14 +197,15 @@ define(function (require, exports, module) {
      *                  Array.<{start:{line:number, ch:number}, end:{line:number, ch:number}, primary:boolean, reversed: boolean, isBeforeEdit: boolean}>}}
      *      An edit description suitable for including in the edits array passed to `Document.doMultipleEdits()`.
      */
-    function _getLineCommentPrefixEdit(editor, prefixes, blockPrefix, blockSuffix, lineSel) {
+    function _getLineCommentPrefixEdit(editor, prefixes, hasIndentComments, blockPrefix, blockSuffix, lineSel) {
         var doc         = editor.document,
             sel         = lineSel.selectionForEdit,
             trackedSels = lineSel.selectionsToTrack,
             lineExp     = _createLineExpressions(prefixes, blockPrefix, blockSuffix),
             startLine   = sel.start.line,
             endLine     = sel.end.line,
-            editGroup   = [];
+            editGroup   = [],
+            startChs    = [];
 
         // In full-line selection, cursor pos is start of next line - but don't want to modify that line
         if (sel.end.ch === 0) {
@@ -201,20 +215,44 @@ define(function (require, exports, module) {
         // Decide if we're commenting vs. un-commenting
         // Are there any non-blank lines that aren't commented out? (We ignore blank lines because
         // some editors like Sublime don't comment them out)
-        var i, line, prefix, commentI,
-            containsNotLineComment = _containsNotLineComment(editor, startLine, endLine, lineExp);
+        var i, line, commentI, lineStart, lineCh, hasSpace,
+            startCh                 = 0,
+            commentAtStart          = PreferencesManager.get("lineCommentAtStart") === true,
+            prefix                  = prefixes[0] + (commentAtStart ? "" : " "),
+            containsNotLineComment  = _containsNotLineComment(editor, startLine, endLine, lineExp);
         
         if (containsNotLineComment) {
+            // Get the position where we want to place the comment prefix
+            if (!commentAtStart) {
+                startCh = null;
+                for (i = startLine; i <= endLine; i++) {
+                    line      = doc.getLine(i);
+                    lineStart = line.match(/^(\s*)/)[1].length;
+                    if (line.length && (startCh === null || lineStart <= startCh)) {
+                        startCh = lineStart;
+                    }
+                }
+            }
+            
             // Comment out - prepend the first prefix to each line
             for (i = startLine; i <= endLine; i++) {
-                editGroup.push({text: prefixes[0], start: {line: i, ch: 0}});
+                line = doc.getLine(i);
+                // Always add the comment prefix after the whitespaces at the start of each line
+                if (hasIndentComments) {
+                    startChs[i] = line.match(/^(\s*)/)[1].length;
+                    editGroup.push({text: prefix, start: {line: i, ch: startChs[i]}});
+                // Only comment non-empty lines (including lines with only whitespaces), unless the position is at the char 0
+                } else if ((line.length && startCh > 0) || startCh === 0) {
+                    editGroup.push({text: prefix, start: {line: i, ch: startCh}});
+                }
             }
-
-            // Make sure tracked selections include the prefix that was added at start of range
+            
+            // Make sure tracked selections include the prefix that was added at calculated position
             _.each(trackedSels, function (trackedSel) {
-                if (trackedSel.start.ch === 0 && CodeMirror.cmpPos(trackedSel.start, trackedSel.end) !== 0) {
-                    trackedSel.start = {line: trackedSel.start.line, ch: 0};
-                    trackedSel.end = {line: trackedSel.end.line, ch: (trackedSel.end.line === endLine ? trackedSel.end.ch + prefixes[0].length : 0)};
+                lineCh = startChs[trackedSel.start.line] || startCh;
+                if (trackedSel.start.ch === lineCh && CodeMirror.cmpPos(trackedSel.start, trackedSel.end) !== 0) {
+                    trackedSel.start = {line: trackedSel.start.line, ch: lineCh};
+                    trackedSel.end = {line: trackedSel.end.line, ch: (trackedSel.end.line === endLine ? trackedSel.end.ch + prefix.length : 0)};
                 } else {
                     trackedSel.isBeforeEdit = true;
                 }
@@ -227,7 +265,8 @@ define(function (require, exports, module) {
 
                 if (prefix) {
                     commentI = line.indexOf(prefix);
-                    editGroup.push({text: "", start: {line: i, ch: commentI}, end: {line: i, ch: commentI + prefix.length}});
+                    hasSpace = !commentAtStart && line[commentI + prefix.length] === " ";
+                    editGroup.push({text: "", start: {line: i, ch: commentI}, end: {line: i, ch: commentI + prefix.length + (hasSpace ? 1 : 0)}});
                 }
             }
             _.each(trackedSels, function (trackedSel) {
@@ -590,7 +629,7 @@ define(function (require, exports, module) {
                 var language = editor.document.getLanguage().getLanguageForMode(mode.name || mode);
 
                 if (language.hasLineCommentSyntax()) {
-                    edit = _getLineCommentPrefixEdit(editor, language.getLineCommentPrefixes(), language.getBlockCommentPrefix(), language.getBlockCommentSuffix(), lineSel);
+                    edit = _getLineCommentPrefixEdit(editor, language.getLineCommentPrefixes(), language.hasIndentLineComments(), language.getBlockCommentPrefix(), language.getBlockCommentSuffix(), lineSel);
                 } else if (language.hasBlockCommentSyntax()) {
                     edit = _getLineCommentPrefixSuffixEdit(editor, language.getBlockCommentPrefix(), language.getBlockCommentSuffix(), lineSel);
                 }
@@ -1104,7 +1143,7 @@ define(function (require, exports, module) {
         return (new $.Deferred()).reject().promise();
     }
 	
-	function _handleSelectAll() {
+    function _handleSelectAll() {
         var result = new $.Deferred(),
             editor = EditorManager.getFocusedEditor();
 
@@ -1117,7 +1156,7 @@ define(function (require, exports, module) {
 
         return result.promise();
     }
-        
+    
     // Register commands
     CommandManager.register(Strings.CMD_INDENT,                 Commands.EDIT_INDENT,                 indentText);
     CommandManager.register(Strings.CMD_UNINDENT,               Commands.EDIT_UNINDENT,               unindentText);

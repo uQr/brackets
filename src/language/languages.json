@@ -196,7 +196,8 @@
         "mode": "sass",
         "fileExtensions": ["sass"],
         "blockComment": ["/*", "*/"],
-        "lineComment": ["//"]
+        "lineComment": ["//"],
+        "indentLineComments": true
     },
 
     "lua": {
@@ -251,6 +252,14 @@
         "mode": ["shell", "text/x-sh"],
         "fileExtensions": ["sh", "command", "bash"],
         "lineComment": ["#"]
+    },
+    
+    "jade": {
+        "name": "Jade",
+        "mode": ["jade", "text/x-jade" ],
+        "fileExtensions": ["jade"],
+        "lineComment": ["//"],
+        "indentLineComments": true
     },
   
     "image": {
