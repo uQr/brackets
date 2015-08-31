@@ -1197,7 +1197,7 @@ pp.parseBindingListItem = function (param) {
 
 pp.parseMaybeDefault = function (startPos, startLoc, left) {
   left = left || this.parseBindingAtom();
-  if (!this.eat(_tokentype.types.eq)) return left;
+  if (this.options.ecmaVersion < 6 || !this.eat(_tokentype.types.eq)) return left;
   var node = this.startNodeAt(startPos, startLoc);
   node.left = left;
   node.right = this.parseMaybeAssign();
